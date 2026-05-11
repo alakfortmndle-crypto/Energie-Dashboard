@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Energie-Dashboard</title>
+
+  <!-- Chart.js für die Diagramme -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <!-- Supabase JavaScript Client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, system-ui, sans-serif;
+      background: #f0f4f8;
+      color: #1a202c;
+      padding: 20px;
+      min-height: 100vh;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    header {
+      background: linear-gradient(135deg, #1F4E79, #2563eb);
+      color: white;
+      padding: 30px;
+      border-radius: 12px;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    header h1 { font-size: 28px; margin-bottom: 8px; }
+    header p { opacity: 0.9; }
+    .controls {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      margin-bottom: 24px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+    }
+    .controls label { font-weight: bold; margin-right: 10px; }
+    .controls select {
+      padding: 10px 16px;
+      font-size: 16px;
+      border: 1px solid #cbd5e0;
+      border-radius: 8px;
+      background: white;
+      cursor: pointer;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+    @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: white;
+      padding: 24px;
+      border-radius: 12px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+    }
+    .card h2 {
+      font-size: 18px;
+      margin-bottom: 16px;
+      color: #1F4E79;
+      border-bottom: 2px solid #e2e8f0;
+      padding-bottom: 8px;
+    }
+    .chart-container { position: relative; height: 320px; }
+    footer {
+      text-align: center;
+      padding: 20px;
+      color: #718096;
+      font-size: 14px;
+    }
+    .status {
+      padding: 12px;
+      background: #fef3c7;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    .status.ok { background: #d1fae5; }
+    .status.error { background: #fee2e2; }
+  </style>
+</head>
+
+<body>
+<div class="container">
+
+  <header>
+    <h1>🔋 Energie-Dashboard</h1>
+    <p>Stromerzeugung und Energiemix verschiedener Länder · Daten aus Our World in Data</p>
+  </header>
+
+  <div id="status" class="status">⏳ Lade Daten aus Supabase ...</div>
+
+  <div class="controls">
+    <label for="land">Land wählen:</label>
+    <select id="land"></select>
+    <label for="jahr" style="margin-left: 24px;">Jahr wählen:</label>
+    <select id="jahr"></select>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>📊 Strommix für ausgewähltes Jahr</h2>
+      <div class="chart-container"><canvas id="chart_pie"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>📈 Entwicklung erneuerbarer Energien</h2>
+      <div class="chart-container"><canvas id="chart_line"></canvas></div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>📉 Strommix pro Jahr (gestapelt)</h2>
+      <div class="chart-container"><canvas id="chart_stacked"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>🌍 Ländervergleich (Gesamterzeugung)</h2>
+      <div class="chart-container"><canvas id="chart_compare"></canvas></div>
+    </div>
+  </div>
+
+  <footer>
+    Erstellt im Rahmen des Datenbanken-Projekts ·
+    Datenquelle: <a href="https://github.com/owid/energy-data">Our World in Data</a>
+  </footer>
+
+</div>
+
+<script>
+// =========================================================
+// HIER MUSS JEDER SCHÜLER SEINE SUPABASE-DATEN EINTRAGEN
+// =========================================================
+const SUPABASE_URL = "https://DEIN-PROJEKT.supabase.co";
+const SUPABASE_KEY = "DEIN-ANON-KEY-HIER-EINFUEGEN";
+
+const { createClient } = supabase;
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// Farben pro Energiequelle - sorgen für einheitliche Darstellung
+const FARBEN = {
+  "Kohle": "#374151", "Gas": "#9ca3af", "Öl": "#78350f",
+  "Atom": "#fbbf24", "Wasser": "#3b82f6", "Wind": "#10b981",
+  "Solar": "#f59e0b", "Bio": "#84cc16"
+};
+
+let charts = {};
+let alleDaten = [];
+
+// =========================================================
+// DATEN AUS SUPABASE LADEN
+// =========================================================
+async function ladeDaten() {
+  const status = document.getElementById("status");
+
+  // JOIN: alle Stromerzeugungsdaten mit Land, Jahr und Energiequelle
+  const { data, error } = await sb
+    .from("Stromerzeugung")
+    .select(`
+      Menge_TWh,
+      Energiequelle ( Name, Kategorie ),
+      Jahr_Daten ( Jahr, Land ( Name ) )
+    `);
+
+  if (error) {
+    status.className = "status error";
+    status.innerHTML = "❌ Fehler beim Laden: " + error.message;
+    return;
+  }
+
+  // Daten flach machen für einfachere Verarbeitung
+  alleDaten = data.map(d => ({
+    land: d.Jahr_Daten.Land.Name,
+    jahr: d.Jahr_Daten.Jahr,
+    quelle: d.Energiequelle.Name,
+    kategorie: d.Energiequelle.Kategorie,
+    menge: d.Menge_TWh
+  }));
+
+  status.className = "status ok";
+  status.innerHTML = `✓ ${alleDaten.length} Datensätze geladen`;
+  setTimeout(() => status.style.display = "none", 2000);
+
+  initUI();
+  zeichneAlleDiagramme();
+}
+
+// =========================================================
+// DROPDOWNS BEFÜLLEN
+// =========================================================
+function initUI() {
+  const laender = [...new Set(alleDaten.map(d => d.land))].sort();
+  const jahre = [...new Set(alleDaten.map(d => d.jahr))].sort((a,b) => b-a);
+
+  const landSelect = document.getElementById("land");
+  laender.forEach(l => landSelect.add(new Option(l, l)));
+
+  const jahrSelect = document.getElementById("jahr");
+  jahre.forEach(j => jahrSelect.add(new Option(j, j)));
+
+  landSelect.addEventListener("change", zeichneAlleDiagramme);
+  jahrSelect.addEventListener("change", zeichneAlleDiagramme);
+}
+
+// =========================================================
+// DIAGRAMME ZEICHNEN
+// =========================================================
+function zeichneAlleDiagramme() {
+  const land = document.getElementById("land").value;
+  const jahr = parseInt(document.getElementById("jahr").value);
+
+  zeichnePieChart(land, jahr);
+  zeichneLineChart(land);
+  zeichneStackedChart(land);
+  zeichneVergleichChart(jahr);
+}
+
+// 1. DOUGHNUT CHART: Strommix für ein Land und Jahr
+function zeichnePieChart(land, jahr) {
+  const daten = alleDaten.filter(d => d.land === land && d.jahr === jahr);
+  const labels = daten.map(d => d.quelle);
+  const werte = daten.map(d => d.menge);
+  const farben = labels.map(l => FARBEN[l]);
+
+  if (charts.pie) charts.pie.destroy();
+  charts.pie = new Chart(document.getElementById("chart_pie"), {
+    type: "doughnut",
+    data: { labels, datasets: [{ data: werte, backgroundColor: farben }] },
+    options: { responsive: true, maintainAspectRatio: false,
+               plugins: { legend: { position: "right" } } }
+  });
+}
+
+// 2. LINE CHART: Erneuerbare über die Jahre
+function zeichneLineChart(land) {
+  const jahre = [...new Set(alleDaten.filter(d => d.land === land).map(d => d.jahr))].sort();
+  const quellen = ["Wasser", "Wind", "Solar", "Bio"];
+
+  const datasets = quellen.map(q => ({
+    label: q,
+    data: jahre.map(j => {
+      const eintrag = alleDaten.find(d => d.land === land && d.jahr === j && d.quelle === q);
+      return eintrag ? eintrag.menge : 0;
+    }),
+    borderColor: FARBEN[q], backgroundColor: FARBEN[q], tension: 0.3
+  }));
+
+  if (charts.line) charts.line.destroy();
+  charts.line = new Chart(document.getElementById("chart_line"), {
+    type: "line",
+    data: { labels: jahre, datasets },
+    options: { responsive: true, maintainAspectRatio: false,
+               scales: { y: { title: { display: true, text: "TWh" } } } }
+  });
+}
+
+// 3. STACKED BAR CHART: alle Quellen pro Jahr gestapelt
+function zeichneStackedChart(land) {
+  const jahre = [...new Set(alleDaten.filter(d => d.land === land).map(d => d.jahr))].sort();
+  const quellen = Object.keys(FARBEN);
+
+  const datasets = quellen.map(q => ({
+    label: q,
+    data: jahre.map(j => {
+      const eintrag = alleDaten.find(d => d.land === land && d.jahr === j && d.quelle === q);
+      return eintrag ? eintrag.menge : 0;
+    }),
+    backgroundColor: FARBEN[q]
+  }));
+
+  if (charts.stacked) charts.stacked.destroy();
+  charts.stacked = new Chart(document.getElementById("chart_stacked"), {
+    type: "bar",
+    data: { labels: jahre, datasets },
+    options: { responsive: true, maintainAspectRatio: false,
+               scales: { x: { stacked: true }, y: { stacked: true, title: { display: true, text: "TWh" } } } }
+  });
+}
+
+// 4. BAR CHART: Ländervergleich Gesamterzeugung
+function zeichneVergleichChart(jahr) {
+  const laender = [...new Set(alleDaten.map(d => d.land))].sort();
+  const werte = laender.map(l =>
+    alleDaten.filter(d => d.land === l && d.jahr === jahr)
+             .reduce((sum, d) => sum + d.menge, 0)
+  );
+
+  if (charts.compare) charts.compare.destroy();
+  charts.compare = new Chart(document.getElementById("chart_compare"), {
+    type: "bar",
+    data: { labels: laender,
+            datasets: [{ label: `Gesamterzeugung ${jahr} (TWh)`, data: werte, backgroundColor: "#1F4E79" }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+  });
+}
+
+// Beim Laden der Seite starten
+ladeDaten();
+</script>
+
+</body>
+</html>
